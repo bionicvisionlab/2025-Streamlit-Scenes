@@ -12,7 +12,6 @@ import json
 # Authentication and Setup
 # ----------------------------
 SCOPES = ["https://www.googleapis.com/auth/drive"]
-SERVICE_ACCOUNT_FILE = "service-account.json"  # Your credentials JSON file
 
 # Load service account credentials from Streamlit secrets
 service_account_info = json.loads(st.secrets["google"]["service_account_json"])
@@ -117,9 +116,9 @@ if "csv_file_id" not in st.session_state:
 # ----------------------------
 # App UI
 # ----------------------------
-st.title("Online Image Labeling Tool")
+st.title("Gold Standard Descriptions")
 
-subject_id = st.text_input("Enter Subject ID:")
+subject_id = st.text_input("Enter your Rater ID:")
 
 if subject_id:
     # Load CSV from drive if not already loaded
@@ -139,15 +138,28 @@ if subject_id:
     else:
         current_image = unlabeled_images[st.session_state.img_index]
         img_bytes = download_image_bytes(current_image["id"])
+        
+        # Calculate caption: show subfolder and the image count within that subfolder
+        subfolder_images = [img for img in image_files if img["subfolder"] == current_image["subfolder"]]
+        try:
+            current_sub_index = subfolder_images.index(current_image) + 1
+        except ValueError:
+            current_sub_index = 1
+        total_in_subfolder = len(subfolder_images)
+        if current_image["subfolder"]:
+            caption = f"{current_image['subfolder']}: Image {current_sub_index} of {total_in_subfolder}"
+        else:
+            caption = f"Image {current_sub_index} of {total_in_subfolder}"
+        
         st.image(
             img_bytes,
-            caption=f"{current_image['subfolder']}/{current_image['name']}",
+            caption=caption,
             width=400,
         )
         # Use a dynamic key based on the current image index so a new text area is created per image.
         description_key = f"description_input_{st.session_state.img_index}"
         description = st.text_area(
-            f"Enter description for {current_image['name']}",
+            f"Enter description for this image",
             key=description_key
         )
 
@@ -178,12 +190,8 @@ if subject_id:
             if st.session_state.get(desc_key, "").strip():
                 save_current_description(current_index)
             # Exit the app without incrementing the index
-            import keyboard, psutil
-            keyboard.press_and_release('ctrl+w')
-            pid = os.getpid()
-            p = psutil.Process(pid)
-            p.terminate()
-
+            os._exit(0)
+            
         # ----------------------------
         # Buttons (using if/elif to ensure only one is processed)
         # ----------------------------
