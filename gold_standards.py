@@ -22,6 +22,8 @@ if "csv_file_id" not in st.session_state:
     st.session_state.csv_file_id = None
 if "exit" not in st.session_state:
     st.session_state.exit = False
+if "error_msg" not in st.session_state:
+    st.session_state.error_msg = ""
 
 # ----------------------------
 # Exit Screen
@@ -42,9 +44,8 @@ drive_service = build("drive", "v3", credentials=creds)
 # Use your provided folder ID
 FOLDER_ID = "1c0NESrnsa2VTHWYf73pAVR2FmTx9ehe6"
 
-@st.cache_data(show_spinner=False)
-def fetch_all_images_cached(folder_id, parent_folder_name=""):
-    # The original fetch_all_images function code here.
+def fetch_all_images(folder_id, parent_folder_name=""):
+    """Recursively retrieve images from Google Drive subfolders."""
     images = []
     response = drive_service.files().list(
         q=f"'{folder_id}' in parents", 
@@ -53,7 +54,7 @@ def fetch_all_images_cached(folder_id, parent_folder_name=""):
     for file in response.get("files", []):
         if file["mimeType"] == "application/vnd.google-apps.folder":
             subfolder_name = f"{parent_folder_name}/{file['name']}" if parent_folder_name else file["name"]
-            images.extend(fetch_all_images_cached(file["id"], subfolder_name))
+            images.extend(fetch_all_images(file["id"], subfolder_name))
         elif file["mimeType"].startswith("image/"):
             images.append({
                 "id": file["id"],
@@ -62,8 +63,8 @@ def fetch_all_images_cached(folder_id, parent_folder_name=""):
             })
     return images
 
-@st.cache_data(show_spinner=False)
-def download_image_bytes_cached(file_id):
+def download_image_bytes(file_id):
+    """Download image bytes from Google Drive."""
     request = drive_service.files().get_media(fileId=file_id)
     fh = BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
@@ -72,7 +73,6 @@ def download_image_bytes_cached(file_id):
         status, done = downloader.next_chunk()
     fh.seek(0)
     return fh.read()
-
 
 def load_csv_from_drive(subject_id):
     """
@@ -150,18 +150,19 @@ if subject_id:
         if not df.empty:
             st.session_state.df = df
             st.session_state.csv_file_id = file_id
-            st.session_state.labeled_images = set(df["Image"])
+            # Only mark images as labeled if description is non-empty
+            st.session_state.labeled_images = set(df.loc[df["Description"].str.strip() != "", "Image"])
     
     # Retrieve and sort all images from the Drive folder
-    image_files = sorted(fetch_all_images_cached(FOLDER_ID), key=lambda x: x["name"])
-    # Filter out images that have already been labeled
+    image_files = sorted(fetch_all_images(FOLDER_ID), key=lambda x: x["name"])
+    # Filter out images that have been labeled with non-empty description
     unlabeled_images = [img for img in image_files if img["name"] not in st.session_state.labeled_images]
     
     if st.session_state.img_index >= len(unlabeled_images):
         st.success("All images have been labeled! 🎉")
     else:
         current_image = unlabeled_images[st.session_state.img_index]
-        img_bytes = download_image_bytes_cached(current_image["id"])
+        img_bytes = download_image_bytes(current_image["id"])
         
         # Calculate caption: show subfolder and image position within that subfolder
         subfolder_images = [img for img in image_files if img["subfolder"] == current_image["subfolder"]]
@@ -178,11 +179,21 @@ if subject_id:
         description_key = f"description_input_{st.session_state.img_index}"
         st.text_area("Enter description for this image", key=description_key)
         
-        # Define callback functions for the buttons
+        # Display error message (if any) right below the text area
+        if st.session_state.error_msg:
+            st.error(st.session_state.error_msg)
+        
+        # Define callbacks for the buttons using on_click
         def save_and_next_callback():
             idx = st.session_state.img_index
-            save_current_description(idx, current_image, subject_id)
-            st.session_state.img_index = idx + 1
+            desc = st.session_state.get(f"description_input_{idx}", "").strip()
+            if not desc:
+                st.session_state.error_msg = "Description cannot be empty."
+                return  # Do not advance
+            else:
+                st.session_state.error_msg = ""
+                save_current_description(idx, current_image, subject_id)
+                st.session_state.img_index = idx + 1
         
         def exit_app_callback():
             idx = st.session_state.img_index
@@ -190,7 +201,6 @@ if subject_id:
                 save_current_description(idx, current_image, subject_id)
             st.session_state.exit = True
         
-        # Render buttons with on_click callbacks
         col1, col2 = st.columns(2)
         col1.button("Save and Next", on_click=save_and_next_callback)
         col2.button("Exit", on_click=exit_app_callback)
