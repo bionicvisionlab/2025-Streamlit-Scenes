@@ -42,8 +42,9 @@ drive_service = build("drive", "v3", credentials=creds)
 # Use your provided folder ID
 FOLDER_ID = "1c0NESrnsa2VTHWYf73pAVR2FmTx9ehe6"
 
-def fetch_all_images(folder_id, parent_folder_name=""):
-    """Recursively retrieve images from Google Drive subfolders."""
+@st.cache_data(show_spinner=False)
+def fetch_all_images_cached(folder_id, parent_folder_name=""):
+    # The original fetch_all_images function code here.
     images = []
     response = drive_service.files().list(
         q=f"'{folder_id}' in parents", 
@@ -52,7 +53,7 @@ def fetch_all_images(folder_id, parent_folder_name=""):
     for file in response.get("files", []):
         if file["mimeType"] == "application/vnd.google-apps.folder":
             subfolder_name = f"{parent_folder_name}/{file['name']}" if parent_folder_name else file["name"]
-            images.extend(fetch_all_images(file["id"], subfolder_name))
+            images.extend(fetch_all_images_cached(file["id"], subfolder_name))
         elif file["mimeType"].startswith("image/"):
             images.append({
                 "id": file["id"],
@@ -61,8 +62,8 @@ def fetch_all_images(folder_id, parent_folder_name=""):
             })
     return images
 
-def download_image_bytes(file_id):
-    """Download image bytes from Google Drive."""
+@st.cache_data(show_spinner=False)
+def download_image_bytes_cached(file_id):
     request = drive_service.files().get_media(fileId=file_id)
     fh = BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
@@ -71,6 +72,7 @@ def download_image_bytes(file_id):
         status, done = downloader.next_chunk()
     fh.seek(0)
     return fh.read()
+
 
 def load_csv_from_drive(subject_id):
     """
@@ -151,7 +153,7 @@ if subject_id:
             st.session_state.labeled_images = set(df["Image"])
     
     # Retrieve and sort all images from the Drive folder
-    image_files = sorted(fetch_all_images(FOLDER_ID), key=lambda x: x["name"])
+    image_files = sorted(fetch_all_images_cached(FOLDER_ID), key=lambda x: x["name"])
     # Filter out images that have already been labeled
     unlabeled_images = [img for img in image_files if img["name"] not in st.session_state.labeled_images]
     
@@ -159,7 +161,7 @@ if subject_id:
         st.success("All images have been labeled! 🎉")
     else:
         current_image = unlabeled_images[st.session_state.img_index]
-        img_bytes = download_image_bytes(current_image["id"])
+        img_bytes = download_image_bytes_cached(current_image["id"])
         
         # Calculate caption: show subfolder and image position within that subfolder
         subfolder_images = [img for img in image_files if img["subfolder"] == current_image["subfolder"]]
