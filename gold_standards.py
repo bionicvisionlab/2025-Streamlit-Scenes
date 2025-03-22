@@ -155,7 +155,7 @@ if subject_id:
             st.session_state.labeled_images = set(df.loc[df["Description"].str.strip() != "", "Image"])
     
     # Retrieve and sort all images from the Drive folder
-    image_files = sorted(fetch_all_images(FOLDER_ID), key=lambda x: x["name"])
+    image_files = sorted(fetch_all_images(FOLDER_ID), key=lambda x: (x["subfolder"], x["name"], x["id"]))
     # Filter out images that have been labeled with non-empty description
     unlabeled_images = [img for img in image_files if img["name"] not in st.session_state.labeled_images]
     
