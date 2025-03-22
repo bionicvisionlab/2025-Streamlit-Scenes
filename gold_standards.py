@@ -38,7 +38,9 @@ if st.session_state.exit:
 # --------------------------------
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 service_account_info = json.loads(st.secrets["google"]["service_account_json"])
-creds = service_account.Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
+creds = service_account.Credentials.from_service_account_info(
+    service_account_info, scopes=SCOPES
+)
 drive_service = build("drive", "v3", credentials=creds)
 FOLDER_ID = "1c0NESrnsa2VTHWYf73pAVR2FmTx9ehe6"
 
@@ -124,7 +126,7 @@ def save_csv_to_drive(subject_id, df, file_id):
          return new_file['id']
 
 def save_current_description(pointer, current_image, subject_id):
-    """Save or update the description for the current image in the DataFrame and update Drive."""
+    """Save or update the description for the current image and update Drive."""
     desc_key = f"description_input_{pointer}"
     desc = st.session_state.get(desc_key, "")
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -141,6 +143,15 @@ def save_current_description(pointer, current_image, subject_id):
         st.session_state.df = pd.concat([df, new_row], ignore_index=True)
     st.session_state.csv_file_id = save_csv_to_drive(subject_id, st.session_state.df, st.session_state.csv_file_id)
 
+def get_current_image():
+    """Return the current image from the master list using pointer."""
+    pointer = st.session_state.pointer
+    master = st.session_state.master_images
+    if pointer < len(master):
+        return master[pointer]
+    else:
+        return None
+
 # --------------------------------
 # App UI
 # --------------------------------
@@ -148,27 +159,24 @@ st.title("Gold Standard Descriptions")
 subject_id = st.text_input("Enter your Rater ID:")
 
 if subject_id:
-    # Load CSV from Drive (only once)
+    # Load CSV from Drive (once)
     if st.session_state.df.empty:
         df, file_id = load_csv_from_drive(subject_id)
         st.session_state.df = df
         st.session_state.csv_file_id = file_id
-    # Load master list of images (only once)
+    # Load master list of images (once)
     if st.session_state.master_images is None:
         st.session_state.master_images = sorted(
             fetch_all_images(FOLDER_ID),
             key=lambda x: (x["subfolder"], x["name"], x["id"])
         )
     
-    master = st.session_state.master_images
-    pointer = st.session_state.pointer
-
-    # Check pointer bounds
-    if pointer >= len(master):
+    current_image = get_current_image()
+    if current_image is None:
         st.success("All images have been labeled! 🎉")
     else:
-        current_image = master[pointer]
-        # Compute caption based on current image's subfolder group
+        master = st.session_state.master_images
+        # Compute caption based on subfolder group
         subfolder_images = [img for img in master if img["subfolder"] == current_image["subfolder"]]
         try:
             current_sub_index = subfolder_images.index(current_image) + 1
@@ -176,22 +184,26 @@ if subject_id:
             current_sub_index = 1
         total_in_subfolder = len(subfolder_images)
         caption = (f"{current_image['subfolder']}: Image {current_sub_index} of {total_in_subfolder}"
-                   if current_image["subfolder"] else
-                   f"Image {current_sub_index} of {total_in_subfolder}")
+                   if current_image["subfolder"] else f"Image {current_sub_index} of {total_in_subfolder}")
         
         img_bytes = download_image_bytes(current_image["id"])
         st.image(img_bytes, caption=caption, width=400)
         
-        # Create a text area for the description. (If already saved, you could preload the value here.)
-        desc_key = f"description_input_{pointer}"
-        st.text_area("Enter description for this image", key=desc_key)
+        # Preload previously saved description (if any)
+        desc_key = f"description_input_{st.session_state.pointer}"
+        default_desc = ""
+        if not st.session_state.df.empty and current_image["name"] in st.session_state.df["Image"].values:
+            default_desc = st.session_state.df.loc[
+                st.session_state.df["Image"] == current_image["name"],
+                "Description"
+            ].iloc[0]
+        
+        st.text_area("Enter description for this image", key=desc_key, value=default_desc)
         
         if st.session_state.error_msg:
             st.error(st.session_state.error_msg)
         
-        # ----------------------------
-        # Callback Functions
-        # ----------------------------
+        # Callback functions using on_click
         def back_callback():
             if st.session_state.pointer > 0:
                 st.session_state.error_msg = ""
@@ -212,10 +224,7 @@ if subject_id:
             if st.session_state.get(f"description_input_{ptr}", "").strip():
                 save_current_description(ptr, current_image, subject_id)
             st.session_state.exit = True
-
-        # ----------------------------
-        # Render Buttons
-        # ----------------------------
+        
         col_back, col_save, col_exit = st.columns(3)
         if st.session_state.pointer > 0:
             col_back.button("Back", on_click=back_callback)
