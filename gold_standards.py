@@ -11,18 +11,22 @@ import json
 # ----------------------------
 # Session State Initialization
 # ----------------------------
-if "img_index" not in st.session_state:
-    st.session_state.img_index = 0
+if "pointer" not in st.session_state:
+    st.session_state.pointer = 0
 if "labeled_images" not in st.session_state:
     st.session_state.labeled_images = set()
 if "df" not in st.session_state:
-    st.session_state.df = pd.DataFrame(columns=["SubjectID", "Image", "Subfolder", "Description", "Timestamp"])
+    st.session_state.df = pd.DataFrame(
+        columns=["SubjectID", "Image", "Subfolder", "Description", "Timestamp"]
+    )
 if "csv_file_id" not in st.session_state:
     st.session_state.csv_file_id = None
 if "exit" not in st.session_state:
     st.session_state.exit = False
 if "error_msg" not in st.session_state:
     st.session_state.error_msg = ""
+if "master_images" not in st.session_state:
+    st.session_state.master_images = None
 
 # ----------------------------
 # Exit Screen
@@ -36,7 +40,9 @@ if st.session_state.exit:
 # ----------------------------
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 service_account_info = json.loads(st.secrets["google"]["service_account_json"])
-creds = service_account.Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
+creds = service_account.Credentials.from_service_account_info(
+    service_account_info, scopes=SCOPES
+)
 drive_service = build("drive", "v3", credentials=creds)
 FOLDER_ID = "1c0NESrnsa2VTHWYf73pAVR2FmTx9ehe6"
 
@@ -74,7 +80,7 @@ def download_image_bytes(file_id):
 def load_csv_from_drive(subject_id):
     """
     Look for a CSV named "gold_standards_<subject_id>.csv" in FOLDER_ID.
-    If found, download and return it as a DataFrame along with its file ID.
+    If found, return it as a DataFrame and its file ID.
     Otherwise, return an empty DataFrame and None.
     """
     filename = f"gold_standards_{subject_id}.csv"
@@ -102,7 +108,7 @@ def load_csv_from_drive(subject_id):
 def save_csv_to_drive(subject_id, df, file_id):
     """
     Save the DataFrame as a CSV file to Drive.
-    If file_id is provided, update that file; otherwise, create a new file in FOLDER_ID.
+    Update if file_id is provided, else create a new file.
     Returns the file ID.
     """
     filename = f"gold_standards_{subject_id}.csv"
@@ -122,27 +128,36 @@ def save_csv_to_drive(subject_id, df, file_id):
          return new_file['id']
 
 def save_current_description(index, current_image, subject_id):
-    """Save or update the current description with a timestamp into the DataFrame and update Drive."""
+    """Save or update the description in the DataFrame and update Drive."""
     desc_key = f"description_input_{index}"
     desc = st.session_state.get(desc_key, "")
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     image_name = current_image["name"]
     df = st.session_state.df
-    # Check if a row for this image already exists
     if image_name in df["Image"].values:
-        # Update the row(s) for this image
         df.loc[df["Image"] == image_name, "Description"] = desc
         df.loc[df["Image"] == image_name, "Timestamp"] = timestamp
     else:
-        # Append a new row if not present
         new_row = pd.DataFrame(
             [[subject_id, image_name, current_image["subfolder"], desc, timestamp]],
             columns=["SubjectID", "Image", "Subfolder", "Description", "Timestamp"]
         )
         st.session_state.df = pd.concat([df, new_row], ignore_index=True)
         st.session_state.labeled_images.add(image_name)
-    # Update the CSV file on Drive with the new/updated DataFrame
     st.session_state.csv_file_id = save_csv_to_drive(subject_id, st.session_state.df, st.session_state.csv_file_id)
+
+def get_current_image():
+    """Return the first image from master_images at or after pointer that isn't labeled."""
+    master = st.session_state.master_images
+    pointer = st.session_state.pointer
+    # Advance pointer until an unlabeled image is found
+    while pointer < len(master) and master[pointer]["name"] in st.session_state.labeled_images:
+        pointer += 1
+    st.session_state.pointer = pointer  # Update pointer in state
+    if pointer < len(master):
+        return master[pointer]
+    else:
+        return None
 
 # ----------------------------
 # App UI
@@ -151,27 +166,30 @@ st.title("Gold Standard Descriptions")
 subject_id = st.text_input("Enter your Rater ID:")
 
 if subject_id:
-    # Load CSV from Drive (only once)
+    # Load CSV (only once) and initialize master_images if not already done
     if st.session_state.df.empty:
         df, file_id = load_csv_from_drive(subject_id)
+        st.session_state.df = df
+        st.session_state.csv_file_id = file_id
+        # Only mark images as labeled if description is non-empty
         if not df.empty:
-            st.session_state.df = df
-            st.session_state.csv_file_id = file_id
             st.session_state.labeled_images = set(df.loc[df["Description"].str.strip() != "", "Image"])
+    if st.session_state.master_images is None:
+        st.session_state.master_images = sorted(
+            fetch_all_images(FOLDER_ID),
+            key=lambda x: (x["subfolder"], x["name"], x["id"])
+        )
     
-    # Retrieve and sort all images from the Drive folder
-    image_files = sorted(fetch_all_images(FOLDER_ID), key=lambda x: (x["subfolder"], x["name"], x["id"]))
-    # Filter out images that have been labeled with non-empty description
-    unlabeled_images = [img for img in image_files if img["name"] not in st.session_state.labeled_images]
+    # Get the current image (first unlabeled from the master list starting at pointer)
+    current_image = get_current_image()
     
-    if st.session_state.img_index >= len(unlabeled_images):
+    if current_image is None:
         st.success("All images have been labeled! 🎉")
     else:
-        current_image = unlabeled_images[st.session_state.img_index]
-        img_bytes = download_image_bytes(current_image["id"])
-        
-        # Calculate caption: show subfolder and image position within that subfolder
-        subfolder_images = [img for img in image_files if img["subfolder"] == current_image["subfolder"]]
+        # Calculate caption using master_images (which is fixed)
+        master = st.session_state.master_images
+        # Filter master list to images in the same subfolder
+        subfolder_images = [img for img in master if img["subfolder"] == current_image["subfolder"]]
         try:
             current_sub_index = subfolder_images.index(current_image) + 1
         except ValueError:
@@ -180,40 +198,41 @@ if subject_id:
         caption = (f"{current_image['subfolder']}: Image {current_sub_index} of {total_in_subfolder}"
                    if current_image["subfolder"] else f"Image {current_sub_index} of {total_in_subfolder}")
         
+        img_bytes = download_image_bytes(current_image["id"])
         st.image(img_bytes, caption=caption, width=400)
-        # Create a text area for the description with a dynamic key
-        description_key = f"description_input_{st.session_state.img_index}"
-        st.text_area("Enter description for this image", key=description_key)
         
-        # Display error message below the text area, if any
+        # Create a text area with a key based on the pointer
+        desc_key = f"description_input_{st.session_state.pointer}"
+        st.text_area("Enter description for this image", key=desc_key)
+        
         if st.session_state.error_msg:
             st.error(st.session_state.error_msg)
         
-        # Define callbacks for the buttons using on_click
+        # Callback functions using on_click
         def back_callback():
-            if st.session_state.img_index > 0:
-                st.session_state.img_index -= 1
+            if st.session_state.pointer > 0:
                 st.session_state.error_msg = ""
+                st.session_state.pointer -= 1
         
         def save_and_next_callback():
-            idx = st.session_state.img_index
-            desc = st.session_state.get(f"description_input_{idx}", "").strip()
+            ptr = st.session_state.pointer
+            desc = st.session_state.get(f"description_input_{ptr}", "").strip()
             if not desc:
                 st.session_state.error_msg = "Description cannot be empty."
                 return
-            else:
-                st.session_state.error_msg = ""
-                save_current_description(idx, current_image, subject_id)
-                st.session_state.img_index = idx + 1
+            st.session_state.error_msg = ""
+            save_current_description(ptr, current_image, subject_id)
+            st.session_state.pointer += 1
         
         def exit_app_callback():
-            idx = st.session_state.img_index
-            if st.session_state.get(f"description_input_{idx}", "").strip():
-                save_current_description(idx, current_image, subject_id)
+            ptr = st.session_state.pointer
+            if st.session_state.get(f"description_input_{ptr}", "").strip():
+                save_current_description(ptr, current_image, subject_id)
             st.session_state.exit = True
         
-        # Create three columns for Back, Save and Next, and Exit buttons
+        # Render Back button only if pointer > 0
         col_back, col_save, col_exit = st.columns(3)
-        col_back.button("Back", on_click=back_callback)
+        if st.session_state.pointer > 0:
+            col_back.button("Back", on_click=back_callback)
         col_save.button("Save and Next", on_click=save_and_next_callback)
         col_exit.button("Exit", on_click=exit_app_callback)
