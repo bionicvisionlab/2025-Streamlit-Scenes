@@ -73,11 +73,11 @@ def download_image_bytes(file_id):
 
 def load_csv_from_drive(subject_id):
     """
-    Look for a CSV named "responses_<subject_id>.csv" in FOLDER_ID.
+    Look for a CSV named "gold_standards_<subject_id>.csv" in FOLDER_ID.
     If found, download and return it as a DataFrame along with its file ID.
     Otherwise, return an empty DataFrame and None.
     """
-    filename = f"responses_{subject_id}.csv"
+    filename = f"gold_standards_{subject_id}.csv"
     query = f"name = '{filename}' and '{FOLDER_ID}' in parents and trashed = false"
     results = drive_service.files().list(q=query, fields="files(id, name)").execute()
     files = results.get('files', [])
@@ -105,7 +105,7 @@ def save_csv_to_drive(subject_id, df, file_id):
     If file_id is provided, update that file; otherwise, create a new file in FOLDER_ID.
     Returns the file ID.
     """
-    filename = f"responses_{subject_id}.csv"
+    filename = f"gold_standards_{subject_id}.csv"
     csv_buffer = BytesIO()
     df.to_csv(csv_buffer, index=False)
     csv_buffer.seek(0)
