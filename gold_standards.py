@@ -16,7 +16,6 @@ if "img_index" not in st.session_state:
 if "labeled_images" not in st.session_state:
     st.session_state.labeled_images = set()
 if "df" not in st.session_state:
-    # Initialize as an empty DataFrame with proper columns.
     st.session_state.df = pd.DataFrame(columns=["SubjectID", "Image", "Subfolder", "Description", "Timestamp"])
 if "csv_file_id" not in st.session_state:
     st.session_state.csv_file_id = None
@@ -36,12 +35,9 @@ if st.session_state.exit:
 # Authentication and Setup
 # ----------------------------
 SCOPES = ["https://www.googleapis.com/auth/drive"]
-# Load service account credentials from Streamlit secrets
 service_account_info = json.loads(st.secrets["google"]["service_account_json"])
 creds = service_account.Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
 drive_service = build("drive", "v3", credentials=creds)
-
-# Use your provided folder ID
 FOLDER_ID = "1c0NESrnsa2VTHWYf73pAVR2FmTx9ehe6"
 
 def fetch_all_images(folder_id, parent_folder_name=""):
@@ -77,11 +73,11 @@ def download_image_bytes(file_id):
 
 def load_csv_from_drive(subject_id):
     """
-    Look for a CSV named "gold_standards_<subject_id>.csv" in FOLDER_ID.
+    Look for a CSV named "responses_<subject_id>.csv" in FOLDER_ID.
     If found, download and return it as a DataFrame along with its file ID.
     Otherwise, return an empty DataFrame and None.
     """
-    filename = f"gold_standards_{subject_id}.csv"
+    filename = f"responses_{subject_id}.csv"
     query = f"name = '{filename}' and '{FOLDER_ID}' in parents and trashed = false"
     results = drive_service.files().list(q=query, fields="files(id, name)").execute()
     files = results.get('files', [])
@@ -109,7 +105,7 @@ def save_csv_to_drive(subject_id, df, file_id):
     If file_id is provided, update that file; otherwise, create a new file in FOLDER_ID.
     Returns the file ID.
     """
-    filename = f"gold_standards_{subject_id}.csv"
+    filename = f"responses_{subject_id}.csv"
     csv_buffer = BytesIO()
     df.to_csv(csv_buffer, index=False)
     csv_buffer.seek(0)
@@ -126,16 +122,26 @@ def save_csv_to_drive(subject_id, df, file_id):
          return new_file['id']
 
 def save_current_description(index, current_image, subject_id):
-    """Save the current description with a timestamp into the DataFrame and update Drive."""
+    """Save or update the current description with a timestamp into the DataFrame and update Drive."""
     desc_key = f"description_input_{index}"
     desc = st.session_state.get(desc_key, "")
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    new_row = pd.DataFrame(
-        [[subject_id, current_image["name"], current_image["subfolder"], desc, timestamp]],
-        columns=["SubjectID", "Image", "Subfolder", "Description", "Timestamp"]
-    )
-    st.session_state.df = pd.concat([st.session_state.df, new_row], ignore_index=True)
-    st.session_state.labeled_images.add(current_image["name"])
+    image_name = current_image["name"]
+    df = st.session_state.df
+    # Check if a row for this image already exists
+    if image_name in df["Image"].values:
+        # Update the row(s) for this image
+        df.loc[df["Image"] == image_name, "Description"] = desc
+        df.loc[df["Image"] == image_name, "Timestamp"] = timestamp
+    else:
+        # Append a new row if not present
+        new_row = pd.DataFrame(
+            [[subject_id, image_name, current_image["subfolder"], desc, timestamp]],
+            columns=["SubjectID", "Image", "Subfolder", "Description", "Timestamp"]
+        )
+        st.session_state.df = pd.concat([df, new_row], ignore_index=True)
+        st.session_state.labeled_images.add(image_name)
+    # Update the CSV file on Drive with the new/updated DataFrame
     st.session_state.csv_file_id = save_csv_to_drive(subject_id, st.session_state.df, st.session_state.csv_file_id)
 
 # ----------------------------
@@ -151,7 +157,6 @@ if subject_id:
         if not df.empty:
             st.session_state.df = df
             st.session_state.csv_file_id = file_id
-            # Only mark images as labeled if description is non-empty
             st.session_state.labeled_images = set(df.loc[df["Description"].str.strip() != "", "Image"])
     
     # Retrieve and sort all images from the Drive folder
@@ -180,17 +185,22 @@ if subject_id:
         description_key = f"description_input_{st.session_state.img_index}"
         st.text_area("Enter description for this image", key=description_key)
         
-        # Display error message (if any) right below the text area
+        # Display error message below the text area, if any
         if st.session_state.error_msg:
             st.error(st.session_state.error_msg)
         
         # Define callbacks for the buttons using on_click
+        def back_callback():
+            if st.session_state.img_index > 0:
+                st.session_state.img_index -= 1
+                st.session_state.error_msg = ""
+        
         def save_and_next_callback():
             idx = st.session_state.img_index
             desc = st.session_state.get(f"description_input_{idx}", "").strip()
             if not desc:
                 st.session_state.error_msg = "Description cannot be empty."
-                return  # Do not advance
+                return
             else:
                 st.session_state.error_msg = ""
                 save_current_description(idx, current_image, subject_id)
@@ -202,6 +212,8 @@ if subject_id:
                 save_current_description(idx, current_image, subject_id)
             st.session_state.exit = True
         
-        col1, col2 = st.columns(2)
-        col1.button("Save and Next", on_click=save_and_next_callback)
-        col2.button("Exit", on_click=exit_app_callback)
+        # Create three columns for Back, Save and Next, and Exit buttons
+        col_back, col_save, col_exit = st.columns(3)
+        col_back.button("Back", on_click=back_callback)
+        col_save.button("Save and Next", on_click=save_and_next_callback)
+        col_exit.button("Exit", on_click=exit_app_callback)
