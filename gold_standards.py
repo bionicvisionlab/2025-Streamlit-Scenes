@@ -25,6 +25,8 @@ if "error_msg" not in st.session_state:
     st.session_state.error_msg = ""
 if "master_images" not in st.session_state:
     st.session_state.master_images = None
+if "labeled_images" not in st.session_state:
+    st.session_state.labeled_images = set()
 
 # --------------------------------
 # Exit Screen
@@ -106,7 +108,7 @@ def load_csv_from_drive(subject_id):
 def save_csv_to_drive(subject_id, df, file_id):
     """
     Save the DataFrame as a CSV file to Drive.
-    If file_id is provided, update that file; otherwise, create a new file in FOLDER_ID.
+    Update if file_id is provided, else create a new file.
     Returns the file ID.
     """
     filename = f"gold_standards_{subject_id}.csv"
@@ -143,14 +145,18 @@ def save_current_description(pointer, current_image, subject_id):
         st.session_state.df = pd.concat([df, new_row], ignore_index=True)
     st.session_state.csv_file_id = save_csv_to_drive(subject_id, st.session_state.df, st.session_state.csv_file_id)
 
-def get_current_image():
-    """Return the current image from the master list using pointer."""
-    pointer = st.session_state.pointer
+# --------------------------------
+# Recalculate Pointer from CSV
+# --------------------------------
+def recalc_pointer():
+    """Recalculate pointer as the index of the first image in master_images not labeled."""
     master = st.session_state.master_images
-    if pointer < len(master):
-        return master[pointer]
-    else:
-        return None
+    for i, img in enumerate(master):
+        if img["name"] not in st.session_state.df["Image"].values:
+            st.session_state.pointer = i
+            return
+    # If all images have been labeled, set pointer to len(master)
+    st.session_state.pointer = len(master)
 
 # --------------------------------
 # App UI
@@ -170,13 +176,17 @@ if subject_id:
             fetch_all_images(FOLDER_ID),
             key=lambda x: (x["subfolder"], x["name"], x["id"])
         )
+    # Recalculate pointer from CSV so that we resume where we left off.
+    recalc_pointer()
     
-    current_image = get_current_image()
-    if current_image is None:
+    master = st.session_state.master_images
+    pointer = st.session_state.pointer
+
+    if pointer >= len(master):
         st.success("All images have been labeled! 🎉")
     else:
-        master = st.session_state.master_images
-        # Compute caption based on subfolder group
+        current_image = master[pointer]
+        # Compute caption: images in the same subfolder
         subfolder_images = [img for img in master if img["subfolder"] == current_image["subfolder"]]
         try:
             current_sub_index = subfolder_images.index(current_image) + 1
@@ -189,8 +199,8 @@ if subject_id:
         img_bytes = download_image_bytes(current_image["id"])
         st.image(img_bytes, caption=caption, width=400)
         
-        # Preload previously saved description (if any)
-        desc_key = f"description_input_{st.session_state.pointer}"
+        # Preload description if already saved
+        desc_key = f"description_input_{pointer}"
         default_desc = ""
         if not st.session_state.df.empty and current_image["name"] in st.session_state.df["Image"].values:
             default_desc = st.session_state.df.loc[
@@ -203,7 +213,9 @@ if subject_id:
         if st.session_state.error_msg:
             st.error(st.session_state.error_msg)
         
-        # Callback functions using on_click
+        # ----------------------------
+        # Callback Functions
+        # ----------------------------
         def back_callback():
             if st.session_state.pointer > 0:
                 st.session_state.error_msg = ""
@@ -225,6 +237,9 @@ if subject_id:
                 save_current_description(ptr, current_image, subject_id)
             st.session_state.exit = True
         
+        # ----------------------------
+        # Render Buttons
+        # ----------------------------
         col_back, col_save, col_exit = st.columns(3)
         if st.session_state.pointer > 0:
             col_back.button("Back", on_click=back_callback)
